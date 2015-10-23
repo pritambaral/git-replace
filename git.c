@@ -139,23 +139,23 @@ void git_print_graph()
 	DBT id, values;
 	char *child = NULL;
 	while(parentsOf->seq(parentsOf, &id, &values, R_NEXT) == 0) {
-		 int children_count = values.size / hashlen;
-		 child = values.data;
-		 printf("Parents of: %s:\n", id.data);
-		 for(int i = 0; i < children_count; i++) {
+		int children_count = values.size / hashlen;
+		child = values.data;
+		printf("Parents of: %s:\n", id.data);
+		for(int i = 0; i < children_count; i++) {
 			printf("\t%s;\n", child);
 			child += hashlen;
-		 }
+		}
 	}
 
 	while(childrenOf->seq(childrenOf, &id, &values, R_NEXT) == 0) {
-		 int children_count = values.size / hashlen;
-		 child = values.data;
-		 printf("Children of: %s:\n", id.data);
-		 for(int i = 0; i < children_count; i++) {
+		int children_count = values.size / hashlen;
+		child = values.data;
+		printf("%d Children of: %s:\n", children_count, id.data);
+		for(int i = 0; i < children_count; i++) {
 			printf("\t%s;\n", child);
 			child += hashlen;
-		 }
+		}
 	}
 }
 
