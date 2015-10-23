@@ -17,6 +17,7 @@ int maxparents = 3;
 
 int git_init(const char *path)
 {
+	git_libgit2_init();
 	return git_repository_open(&repo, path);
 }
 
@@ -25,17 +26,19 @@ int put_children_of(void *parent_id, void *child_id)
 	DBT key, value;
 	key.data = parent_id;
 	key.size = hashlen;
+	void *child_ids = NULL;
 	if (childrenOf->get(childrenOf, &key, &value, 0) == 1) { //parent_id doesn't exist
 		value.data = child_id;
 		value.size = hashlen;
 	} else { //parent_id already has some children
-		void *child_ids = malloc( value.size + hashlen );
+		child_ids = malloc( value.size + hashlen );
 		memcpy(child_ids, value.data, value.size);
 		memcpy(child_ids+value.size, child_id, hashlen);
 		value.data = child_ids;
 		value.size += hashlen;
 	}
 	childrenOf->put(childrenOf, &key, &value, 0);
+	free(child_ids);
 }
 
 int git_draw_graph()
@@ -162,4 +165,5 @@ void git_fini()
 	childrenOf->close(childrenOf);
 	parentsOf->close(parentsOf);
 	refs->close(refs);
+	git_libgit2_shutdown();
 }
