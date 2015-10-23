@@ -86,7 +86,11 @@ int git_draw_graph()
 	git_commit *commit = NULL;
 	int parentCount = 0;
 	void *ptr = NULL;
+	git_oid *parent_oid;
 	hash *parentIds = (hash *) malloc(maxparents * hashlen);
+	char *commit_id = (char *) malloc(hashlen);
+	key.data = commit_id;
+	key.size = hashlen;
 	while (pending->seq(pending, &id, &value, R_FIRST) == 0) {
 		pending->del(pending, &id, R_CURSOR);
 		done->put(done, &id, &value, 0);
@@ -105,9 +109,7 @@ int git_draw_graph()
 			parentIds = ptr;
 		}
 
-		git_oid *parent_oid;
-		key.data = git_oid_tostr_s(id.data);
-		key.size = hashlen;
+		strncpy(commit_id, git_oid_tostr_s(id.data), hashlen);
 		value.size = 0;
 		for(int i = 0; i < parentCount; i++) {
 			parent_oid = (git_oid *) git_commit_parent_id(commit, i);
