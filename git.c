@@ -181,8 +181,8 @@ void git_print_graph()
 void git_fini()
 {
 	git_repository_free(repo);
-	childrenOf->close(childrenOf);
-	parentsOf->close(parentsOf);
-	refs->close(refs);
+	if (childrenOf) childrenOf->close(childrenOf);
+	if (parentsOf) parentsOf->close(parentsOf);
+	if (refs) refs->close(refs);
 	git_libgit2_shutdown();
 }
