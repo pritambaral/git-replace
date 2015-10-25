@@ -143,6 +143,7 @@ int git_draw_graph()
 		value.size = hashlen * parentCount;
 		parentsOf->put(parentsOf, &key, &value, 0);
 	}
+	free(commit_id);
 
 error:
 	git_branch_iterator_free(iter);
