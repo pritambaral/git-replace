@@ -38,21 +38,21 @@ int git_init(const char *path)
 	return git_repository_open(&repo, path);
 }
 
-int put_children_of(void *parent_id, void *child_id)
+void put_children_of(void *parent_id, void *child_id)
 {
 	DBT key, value;
 	key.data = parent_id;
-	key.size = hashlen;
+	key.size = sizeof(git_oid);
 	void *child_ids = NULL;
 	if (childrenOf->get(childrenOf, &key, &value, 0) == 1) { //parent_id doesn't exist
 		value.data = child_id;
-		value.size = hashlen;
+		value.size = sizeof(git_oid);
 	} else { //parent_id already has some children
-		child_ids = malloc( value.size + hashlen );
+		child_ids = malloc( value.size + sizeof(git_oid) );
 		memcpy(child_ids, value.data, value.size);
-		memcpy(child_ids+value.size, child_id, hashlen);
+		memcpy(child_ids+value.size, child_id, sizeof(git_oid));
 		value.data = child_ids;
-		value.size += hashlen;
+		value.size += sizeof(git_oid);
 	}
 	childrenOf->put(childrenOf, &key, &value, 0);
 	free(child_ids);
@@ -104,10 +104,8 @@ int git_draw_graph()
 	int parentCount = 0;
 	void *ptr = NULL;
 	git_oid *parent_oid;
-	hash *parentIds = (hash *) malloc(maxparents * hashlen);
-	char *commit_id = (char *) malloc(hashlen);
-	key.data = commit_id;
-	key.size = hashlen;
+	git_oid *parentIds = (git_oid *) malloc(maxparents * sizeof(git_oid));
+	key.size = sizeof(git_oid);
 	while (pending->seq(pending, &id, &value, R_FIRST) == 0) {
 		pending->del(pending, &id, R_CURSOR);
 		done->put(done, &id, &value, 0);
@@ -118,7 +116,7 @@ int git_draw_graph()
 		ptr = parentIds;
 		if (parentCount > maxparents) {
 			maxparents = parentCount;
-			ptr = realloc((void *)parentIds, maxparents * hashlen);
+			ptr = realloc((void *)parentIds, maxparents * sizeof(git_oid));
 			if (ptr == NULL) {
 				ret = 2;
 				goto error;
@@ -126,7 +124,7 @@ int git_draw_graph()
 			parentIds = ptr;
 		}
 
-		strncpy(commit_id, git_oid_tostr_s(id.data), hashlen);
+		key.data = id.data;
 		value.size = 0;
 		for(int i = 0; i < parentCount; i++) {
 			parent_oid = (git_oid *) git_commit_parent_id(commit, i);
@@ -134,16 +132,15 @@ int git_draw_graph()
 			if (done->get(done, &id, &value, 0) == 1) {
 				pending->put(pending, &id, &value, 0);
 			}
-			strncpy(ptr, git_oid_tostr_s(parent_oid), hashlen);
+			memcpy(ptr, parent_oid, sizeof(git_oid));
 			put_children_of(ptr, key.data);
-			ptr += hashlen;
+			ptr += sizeof(git_oid);
 		}
 
 		value.data = parentIds;
-		value.size = hashlen * parentCount;
+		value.size = sizeof(git_oid) * parentCount;
 		parentsOf->put(parentsOf, &key, &value, 0);
 	}
-	free(commit_id);
 
 error:
 	git_branch_iterator_free(iter);
@@ -157,24 +154,24 @@ error:
 void git_print_graph()
 {
 	DBT id, values;
-	char *child = NULL;
+	git_oid *oid = NULL;
 	while(parentsOf->seq(parentsOf, &id, &values, R_NEXT) == 0) {
-		int children_count = values.size / hashlen;
-		child = values.data;
-		printf("Parents of: %s:\n", id.data);
+		int children_count = values.size / sizeof(git_oid);
+		oid = values.data;
+		printf("Parents of: %s:\n", git_oid_tostr_s(id.data));
 		for(int i = 0; i < children_count; i++) {
-			printf("\t%s;\n", child);
-			child += hashlen;
+			printf("\t%s;\n", git_oid_tostr_s(oid));
+			oid += sizeof(git_oid);
 		}
 	}
 
 	while(childrenOf->seq(childrenOf, &id, &values, R_NEXT) == 0) {
-		int children_count = values.size / hashlen;
-		child = values.data;
-		printf("%d Children of: %s:\n", children_count, id.data);
+		int children_count = values.size / sizeof(git_oid);
+		oid = values.data;
+		printf("%d Children of: %s:\n", children_count, git_oid_tostr_s(id.data));
 		for(int i = 0; i < children_count; i++) {
-			printf("\t%s;\n", child);
-			child += hashlen;
+			printf("\t%s;\n", git_oid_tostr_s(oid));
+			oid += sizeof(git_oid);
 		}
 	}
 }
