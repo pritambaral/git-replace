@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include "strreplace/strreplace.hh"
 
 #define SHA1LEN 40
 
@@ -28,13 +29,16 @@ typedef struct {
 } hash;
 size_t hashlen = sizeof(hash);
 
-git_repository *repo = NULL;
-DB *childrenOf = NULL, *parentsOf = NULL, *refs = NULL;
+git_repository *repo = NULL, *new_repo = NULL;
+DB *childrenOf = NULL, *parentsOf = NULL, *refs = NULL, *oldToNew = NULL;
+git_commit *root = NULL;
 int maxparents = 3;
+int rename_files = 0;
 
-int git_init(const char *path)
+int git_init(const char *path, int rename_flag)
 {
 	git_libgit2_init();
+	rename_files = rename_flag;
 	return git_repository_open(&repo, path);
 }
 
@@ -109,9 +113,10 @@ int git_draw_graph()
 	while (pending->seq(pending, &id, &value, R_FIRST) == 0) {
 		pending->del(pending, &id, R_CURSOR);
 		done->put(done, &id, &value, 0);
-		git_commit_free(commit);
+		if (root != commit) git_commit_free(commit);
 		git_commit_lookup(&commit, repo, id.data);
 		parentCount = git_commit_parentcount(commit);
+		if (parentCount == 0) root = commit;
 
 		ptr = parentIds;
 		if (parentCount > maxparents) {
@@ -144,10 +149,168 @@ int git_draw_graph()
 
 error:
 	git_branch_iterator_free(iter);
-	git_commit_free(commit);
+	if (root != commit) git_commit_free(commit);
 	pending->close(pending);
 	done->close(done);
 	free(parentIds);
+	return ret;
+}
+
+int git_create_new_repo(const char *path)
+{
+	return git_repository_init(&new_repo, path, 0);
+}
+
+/*!
+ * @brief 			Recursively copy a tree
+ *
+ * @param tree 		the tree to copy
+ *
+ * @return 			oid of the the new tree object; or NULL on failure
+ */
+git_oid *copy_tree_r(git_tree *tree)
+{
+	const char *name;
+	const git_tree_entry *entry = NULL;
+	static git_oid buf_oid;
+	git_oid *new_oid = NULL;
+	git_otype type;
+	size_t entrycount = git_tree_entrycount(tree);
+	git_treebuilder *builder = NULL;
+	git_treebuilder_new(&builder, new_repo, NULL);
+
+	for (size_t i = 0; i < entrycount; i++) {
+		entry = git_tree_entry_byindex(tree, i);
+		type = git_tree_entry_type(entry);
+
+		if (type == GIT_OBJ_TREE) {
+			git_tree *local_tree = NULL;
+			git_tree_lookup(&local_tree, repo, git_tree_entry_id(entry));
+			new_oid = copy_tree_r(local_tree);
+			git_tree_free(local_tree);
+			if (new_oid == NULL) goto error;
+		} else if (type == GIT_OBJ_BLOB) {
+			new_oid = &buf_oid;
+			git_blob *local_blob;
+			git_blob_lookup(&local_blob, repo, git_tree_entry_id(entry));
+			git_blob_create_frombuffer(new_oid, new_repo, git_blob_rawcontent(local_blob), git_blob_rawsize(local_blob));
+			git_blob_free(local_blob);
+			//TODO: implement replacing file contents
+		} else if (type == GIT_OBJ_COMMIT) {
+			new_oid = (git_oid *) git_tree_entry_id(entry);
+		} else {
+			fprintf(stderr, "Can't handle tree entry of type %d\n", type);
+			new_oid = NULL;
+		}
+
+		if (rename_files)
+			name = replace(git_tree_entry_name(entry));
+		else
+			name = git_tree_entry_name(entry);
+
+		git_treebuilder_insert(NULL, builder, name, new_oid, git_tree_entry_filemode(entry));
+	}
+
+	new_oid = &buf_oid;
+	git_treebuilder_write(new_oid, builder);
+
+error:
+	git_treebuilder_free(builder);
+	return new_oid;
+}
+
+/*!
+ * @brief 			make a copy in the new repo of a commit from the old repo
+ *
+ * @param commit	the commit to copy
+ *
+ * @return			0 for success
+ */
+int copy_commit(git_commit *commit)
+{
+	int ret = 0;
+	git_tree *tree = NULL, *new_tree = NULL;
+	git_oid *new_tree_oid = NULL, new_commit_oid;
+	const char *message_encoding = NULL, *message = NULL;
+
+	// Get array of new parents
+	git_oid **parent_oids = NULL;
+	git_commit **new_parents = NULL;
+	DBT key, value;
+	key.data = (void *) git_commit_id(commit);
+	key.size = sizeof(git_oid);
+
+	parentsOf->get(parentsOf, &key, &value, 0);
+	parent_oids = value.data;
+	size_t parentCount = value.size / sizeof(git_oid);
+	new_parents = (git_commit **) malloc(parentCount * sizeof(git_commit *));
+	git_oid *new_parent_oid = NULL;
+
+	for (size_t i = 0; i < parentCount; i++) {
+		key.data = parent_oids[i];
+		key.size = sizeof(git_oid);
+
+		if (oldToNew->get(oldToNew, &key, &value, 0) != 0) {
+			fprintf(stderr, "Couldn't find equivalent in new repo of commit %s\n", git_oid_tostr_s(git_commit_id(commit)));
+			ret = 1;
+			goto error;
+		}
+
+		new_parents[i] = value.data;
+	}
+	// Got new parents
+
+	if ((message_encoding = git_commit_message_encoding(commit)) != NULL) // If the message encoding is not UTF-8, let's not touch it
+		message = git_commit_message(commit);
+	else
+		message = replace(git_commit_message(commit));
+
+	if ((ret = git_commit_tree(&tree, commit)) != 0) goto error;
+	if ((new_tree_oid = copy_tree_r(tree)) == NULL) {ret = -15; goto error;}
+	git_tree_lookup(&new_tree, new_repo, new_tree_oid);
+
+	if ((ret = git_commit_create(&new_commit_oid, new_repo, NULL,
+					git_commit_author(commit), git_commit_committer(commit),
+					message_encoding, message, new_tree,
+					parentCount,
+					(const git_commit **)new_parents))
+			!= 0) {
+		fprintf(stderr, "Couldn't copy commit %s into new repo\n", git_oid_tostr_s(git_commit_id(commit)));
+		goto error;
+	} else {
+		key.data = (void *) git_commit_id(commit);
+		key.size = value.size = sizeof(git_oid);
+		value.data = &new_commit_oid;
+		oldToNew->put(oldToNew, &key, &value, 0);
+	}
+
+error:
+	free(new_parents);
+	git_tree_free(tree);
+	return ret;
+}
+
+int git_populate_new_repo()
+{
+	int ret = 0;
+	git_commit *commit = root;
+	oldToNew = dbopen(NULL, O_CREAT | O_RDWR, 0777, DB_BTREE, NULL);
+	const char *log_message = "Setting ref to corresponding commit in new repo";
+
+	ret = copy_commit(commit);
+	// TODO Walk up the stack of commits and copy 'em all
+
+	DBT refKey, refValue, newRefValue;
+	git_reference *new_ref;
+	while(refs->seq(refs, &refKey, &refValue, R_NEXT) == 0) {
+		fprintf(stdout, "Transferring ref %s\n", refKey.data);
+		if (oldToNew->get(oldToNew, &refValue, &newRefValue, 0) == 1) continue;
+		// TODO replace continue with error handling when copying all commits is implemented
+
+		git_reference_create(&new_ref, new_repo, refKey.data, newRefValue.data, 0, log_message);
+	}
+
+	git_reference_free(new_ref);
 	return ret;
 }
 
@@ -182,5 +345,7 @@ void git_fini()
 	if (childrenOf) childrenOf->close(childrenOf);
 	if (parentsOf) parentsOf->close(parentsOf);
 	if (refs) refs->close(refs);
+	if (oldToNew) oldToNew->close(oldToNew);
+	if (root) git_commit_free(root);
 	git_libgit2_shutdown();
 }

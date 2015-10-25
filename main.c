@@ -18,8 +18,11 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
+#include "strreplace/strreplace.hh"
 #include "git.h"
 
 int return_code = 0;
@@ -28,7 +31,7 @@ void print_usage(char *bin) {
 	fprintf(stderr, "Usage: %s [options]\n", bin);
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h\tHelp\n");
-	fprintf(stderr, "\t-d\tPath of .git repo\n");
+	fprintf(stderr, "\t-d\tPath of git repo\n");
 	fprintf(stderr, "\t-p\tPattern to match against\n");
 	fprintf(stderr, "\t-r\tReplacement of the pattern\n");
 	fprintf(stderr, "\t-f\tRename files too\n");
@@ -37,8 +40,8 @@ void print_usage(char *bin) {
 
 int main(int argc, char *argv[]) {
 	int flags, opt;
-	char *directory = NULL;
-	asprintf(&directory, ".git");
+	char *directory = NULL, *new_directory = NULL;
+	asprintf(&directory, ".");
 	char *pattern = NULL, *replacement = NULL;
 	char file_rename = 0, content_replace = 0;
 	if (argc == 1) {
@@ -50,13 +53,13 @@ int main(int argc, char *argv[]) {
 		switch(opt) {
 			case 'd':
 				free(directory);
-				asprintf(&directory, optarg);
+				asprintf(&directory, "%s", optarg);
 				break;
 			case 'p':
-				asprintf(&pattern, optarg);
+				asprintf(&pattern, "%s", optarg);
 				break;
 			case 'r':
-				asprintf(&replacement, optarg);
+				asprintf(&replacement, "%s", optarg);
 				break;
 			case 'f':
 				file_rename = 1;
@@ -74,12 +77,31 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if ((return_code = git_init(directory) != 0)) goto error;
+	if (pattern == NULL || replacement == NULL) {
+		fprintf(stderr, "Both pattern and replacement must be supplied\n");
+		return_code = 1;
+		goto error;
+	}
+	set_regex(pattern, replacement);
+
+	asprintf(&new_directory, "%s/new_repo", directory);
+	struct stat repo_stat;
+	stat(directory, &repo_stat);
+	if ((return_code = mkdir(new_directory, repo_stat.st_mode)) != 0) {
+		fprintf(stderr, "cannot create directory '%s': %s", new_directory, strerror(errno));
+		goto error;
+	}
+
+	if ((return_code = git_init(directory, file_rename) != 0)) goto error;
 	if ((return_code = git_draw_graph() != 0)) goto error;
-    git_print_graph();
+	git_print_graph();
+	if ((return_code = git_create_new_repo(new_directory) != 0)) goto error;
+	if ((return_code = git_populate_new_repo() != 0)) goto error;
+
 
 error:
 	free(directory);
+	free(new_directory);
 	free(pattern);
 	free(replacement);
 	git_fini();
