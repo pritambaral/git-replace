@@ -210,6 +210,8 @@ git_oid *copy_tree_r(git_tree *tree)
 			name = git_tree_entry_name(entry);
 
 		git_treebuilder_insert(NULL, builder, name, new_oid, git_tree_entry_filemode(entry));
+
+		if (rename_files) free((void *)name);
 	}
 
 	new_oid = &buf_oid;
@@ -280,6 +282,7 @@ int copy_commit(git_commit *commit)
 	}
 
 error:
+	if (message_encoding == NULL) free((void *) message);
 	free(new_parent_oids);
 	git_tree_free(tree);
 	return ret;
