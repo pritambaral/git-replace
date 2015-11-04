@@ -290,27 +290,106 @@ error:
 	return ret;
 }
 
+int add_pending(git_commit *commit, DB *db)
+{
+	const git_oid *parent_oid = NULL;
+	int parentCount = 0, pendingIndex = 0, ret = 0, i;
+	DBT key, value;
+	if ((parentCount = git_commit_parentcount(commit)) == 0) pendingIndex = 0;
+	else if ((ret = db->seq(db, &key, &value, R_LAST)) < 0) goto error;
+	else if (ret == 1) ret = pendingIndex = 0; // There are no elements in the pending list
+	else pendingIndex = *(int *)key.data;
+
+	for(i = 0; i < parentCount; i++) {
+		parent_oid = git_commit_parent_id(commit, i);
+		key.data = (void *) parent_oid;
+		key.size = sizeof(git_oid);
+		if (oldToNew->get(oldToNew, &key, &value, 0) != 0) {
+			fprintf(stderr, "Couldn't get corresponding commit of %s in new repo - while adding pending\n", git_oid_tostr_s(key.data));
+			break;
+		}
+	}
+	if (i != parentCount) return 0;
+
+	pendingIndex++;
+	key.data = &pendingIndex;
+	key.size = sizeof(pendingIndex);
+	value.data = (void *) git_commit_id(commit);
+	value.size = sizeof(git_oid);
+	ret = db->put(db, &key, &value, 0);
+
+error:
+	return ret;
+}
+
+/*!
+ * @brief			retrieves the first commit from the pending list
+ *
+ * @param	db		The DB object the pending list is stored in
+ *
+ * @return	commit	A ptr to a pending git_commit; must be freed by the caller
+ */
+git_commit * get_pending(DB *db)
+{
+	git_oid *oid = NULL;
+	git_commit *commit = NULL;
+	DBT key, value;
+	if (db->seq(db, &key, &value, R_FIRST) != 0) return NULL;
+
+	if (git_commit_lookup(&commit, repo, value.data) != 0) return NULL;
+	db->del(db, &key, 0);
+	return commit;
+}
+
 int git_populate_new_repo()
 {
 	int ret = 0;
-	git_commit *commit = root;
+	git_commit *commit = NULL, *child = NULL;
+	git_oid *child_oid = NULL;
+	DBT key, value;
+	DB *pending = dbopen(NULL, O_CREAT | O_RDWR, 0777, DB_BTREE, NULL);
+	if (pending == NULL) {ret = 1; goto error;}
+	if ((ret = add_pending(root, pending)) != 0) goto error;
 	oldToNew = dbopen(NULL, O_CREAT | O_RDWR, 0777, DB_BTREE, NULL);
 	const char *log_message = "Setting ref to corresponding commit in new repo";
 
-	ret = copy_commit(commit);
-	// TODO Walk up the stack of commits and copy 'em all
+	key.size = sizeof(git_oid);
+	while((commit = get_pending(pending)) != NULL) {
+		if ((ret = copy_commit(commit)) != 0) goto error;
+
+		// Try and add children to the pending list
+		key.data = (void *) git_commit_id(commit);
+		if (childrenOf->get(childrenOf, &key, &value, 0) == 0) {
+			child_oid = value.data;
+			do {
+				if ((ret = git_commit_lookup(&child, repo, child_oid)) != 0) {
+					fprintf(stderr, "Couldn't lookup commit of child oid %s\n", git_oid_tostr_s(child_oid));
+					goto error;
+				}
+				ret = add_pending(child, pending);
+				if (ret != 0) break;
+				child_oid += sizeof(git_oid *);
+				git_commit_free(child);
+			} while((void *)child_oid < (value.data + value.size));
+		}
+
+		git_commit_free(commit);
+		if (ret != 0) goto error;
+	}
 
 	DBT refKey, refValue, newRefValue;
 	git_reference *new_ref;
 	while(refs->seq(refs, &refKey, &refValue, R_NEXT) == 0) {
-		fprintf(stdout, "Transferring ref %s\n", refKey.data);
-		if (oldToNew->get(oldToNew, &refValue, &newRefValue, 0) == 1) continue;
-		// TODO replace continue with error handling when copying all commits is implemented
-
+		if ((ret = oldToNew->get(oldToNew, &refValue, &newRefValue, 0)) == 1) {
+			fprintf(stderr, "Couldn't get commit of ref %s to copy to new repo\n", refKey.data);
+			goto error;
+		}
 		git_reference_create(&new_ref, new_repo, refKey.data, newRefValue.data, 0, log_message);
+		git_reference_free(new_ref);
 	}
 
-	git_reference_free(new_ref);
+error:
+	if (pending) pending->close(pending);
 	return ret;
 }
 
