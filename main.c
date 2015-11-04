@@ -35,7 +35,6 @@ void print_usage(char *bin) {
 	fprintf(stderr, "\t-p\tPattern to match against\n");
 	fprintf(stderr, "\t-r\tReplacement of the pattern\n");
 	fprintf(stderr, "\t-f\tRename files too\n");
-	fprintf(stderr, "\t-c\tReplace in file contents too\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -49,7 +48,7 @@ int main(int argc, char *argv[]) {
 		return_code = 1;
 		goto error;
 	}
-	while((opt = getopt(argc, argv, "hd:p:r:fc")) != -1) {
+	while((opt = getopt(argc, argv, "hd:p:r:f")) != -1) {
 		switch(opt) {
 			case 'd':
 				free(directory);
@@ -94,7 +93,6 @@ int main(int argc, char *argv[]) {
 
 	if ((return_code = git_init(directory, file_rename) != 0)) goto error;
 	if ((return_code = git_draw_graph() != 0)) goto error;
-	git_print_graph();
 	if ((return_code = git_create_new_repo(new_directory) != 0)) goto error;
 	if ((return_code = git_populate_new_repo() != 0)) goto error;
 

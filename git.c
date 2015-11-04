@@ -391,31 +391,6 @@ error:
 	return ret;
 }
 
-void git_print_graph()
-{
-	DBT id, values;
-	git_oid *oid = NULL;
-	while(parentsOf->seq(parentsOf, &id, &values, R_NEXT) == 0) {
-		int children_count = values.size / sizeof(git_oid);
-		oid = values.data;
-		printf("Parents of: %s:\n", git_oid_tostr_s(id.data));
-		for(int i = 0; i < children_count; i++) {
-			printf("\t%s;\n", git_oid_tostr_s(oid));
-			oid += sizeof(git_oid);
-		}
-	}
-
-	while(childrenOf->seq(childrenOf, &id, &values, R_NEXT) == 0) {
-		int children_count = values.size / sizeof(git_oid);
-		oid = values.data;
-		printf("%d Children of: %s:\n", children_count, git_oid_tostr_s(id.data));
-		for(int i = 0; i < children_count; i++) {
-			printf("\t%s;\n", git_oid_tostr_s(oid));
-			oid += sizeof(git_oid);
-		}
-	}
-}
-
 void git_fini()
 {
 	git_repository_free(repo);
