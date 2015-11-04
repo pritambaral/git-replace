@@ -16,6 +16,7 @@
  */
 
 #include <git2.h>
+#include <git2/sys/commit.h>
 #include <db_185.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -234,20 +235,15 @@ int copy_commit(git_commit *commit)
 	const char *message_encoding = NULL, *message = NULL;
 
 	// Get array of new parents
-	git_oid **parent_oids = NULL;
-	git_commit **new_parents = NULL;
+	git_oid **new_parent_oids = NULL;
 	DBT key, value;
-	key.data = (void *) git_commit_id(commit);
-	key.size = sizeof(git_oid);
 
-	parentsOf->get(parentsOf, &key, &value, 0);
-	parent_oids = value.data;
-	size_t parentCount = value.size / sizeof(git_oid);
-	new_parents = (git_commit **) malloc(parentCount * sizeof(git_commit *));
+	size_t parentCount = git_commit_parentcount(commit);
+	new_parent_oids = (git_oid **) malloc(parentCount * sizeof(git_oid *));
 	git_oid *new_parent_oid = NULL;
 
 	for (size_t i = 0; i < parentCount; i++) {
-		key.data = parent_oids[i];
+		key.data = (void *) git_commit_parent_id(commit, i);
 		key.size = sizeof(git_oid);
 
 		if (oldToNew->get(oldToNew, &key, &value, 0) != 0) {
@@ -256,7 +252,7 @@ int copy_commit(git_commit *commit)
 			goto error;
 		}
 
-		new_parents[i] = value.data;
+		new_parent_oids[i] = value.data;
 	}
 	// Got new parents
 
@@ -267,13 +263,12 @@ int copy_commit(git_commit *commit)
 
 	if ((ret = git_commit_tree(&tree, commit)) != 0) goto error;
 	if ((new_tree_oid = copy_tree_r(tree)) == NULL) {ret = -15; goto error;}
-	git_tree_lookup(&new_tree, new_repo, new_tree_oid);
 
-	if ((ret = git_commit_create(&new_commit_oid, new_repo, NULL,
+	if ((ret = git_commit_create_from_ids(&new_commit_oid, new_repo, NULL,
 					git_commit_author(commit), git_commit_committer(commit),
-					message_encoding, message, new_tree,
+					message_encoding, message, new_tree_oid,
 					parentCount,
-					(const git_commit **)new_parents))
+					(const git_oid **)new_parent_oids))
 			!= 0) {
 		fprintf(stderr, "Couldn't copy commit %s into new repo\n", git_oid_tostr_s(git_commit_id(commit)));
 		goto error;
@@ -281,11 +276,11 @@ int copy_commit(git_commit *commit)
 		key.data = (void *) git_commit_id(commit);
 		key.size = value.size = sizeof(git_oid);
 		value.data = &new_commit_oid;
-		oldToNew->put(oldToNew, &key, &value, 0);
+		ret = oldToNew->put(oldToNew, &key, &value, 0);
 	}
 
 error:
-	free(new_parents);
+	free(new_parent_oids);
 	git_tree_free(tree);
 	return ret;
 }
