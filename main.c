@@ -20,8 +20,6 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <string.h>
-#include <errno.h>
 #include "strreplace/strreplace.hh"
 #include "git.h"
 
@@ -39,7 +37,7 @@ void print_usage(char *bin) {
 
 int main(int argc, char *argv[]) {
 	int flags, opt;
-	char *directory = NULL, *new_directory = NULL;
+	char *directory = NULL;
 	asprintf(&directory, ".");
 	char *pattern = NULL, *replacement = NULL;
 	char file_rename = 0, content_replace = 0;
@@ -83,23 +81,13 @@ int main(int argc, char *argv[]) {
 	}
 	set_regex(pattern, replacement);
 
-	asprintf(&new_directory, "%s/new_repo", directory);
-	struct stat repo_stat;
-	stat(directory, &repo_stat);
-	if ((return_code = mkdir(new_directory, repo_stat.st_mode)) != 0) {
-		fprintf(stderr, "cannot create directory '%s': %s", new_directory, strerror(errno));
-		goto error;
-	}
-
 	if ((return_code = git_init(directory, file_rename) != 0)) goto error;
 	if ((return_code = git_draw_graph() != 0)) goto error;
-	if ((return_code = git_create_new_repo(new_directory) != 0)) goto error;
-	if ((return_code = git_populate_new_repo() != 0)) goto error;
+	if ((return_code = git_perform_replace() != 0)) goto error;
 
 
 error:
 	free(directory);
-	free(new_directory);
 	free(pattern);
 	free(replacement);
 	git_fini();

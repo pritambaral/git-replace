@@ -29,11 +29,11 @@ void set_regex(const char *input_pat, const char *input_rep)
 	replacement = pcrecpp::StringPiece(input_rep);
 }
 
-const char *replace(const char *c_str) {
+int replace(const char *c_str, char **dest) {
 	replaced = std::string(c_str);
-	pattern->GlobalReplace(replacement, &replaced);
-	char *result = (char *) malloc(sizeof(char) * (replaced.length() + 1));
-	strncpy(result, replaced.c_str(), replaced.length());
-	result[replaced.length()] = '\0';
-	return result;
+	int count = pattern->GlobalReplace(replacement, &replaced);
+	*dest = (char *) malloc(sizeof(char) * (replaced.length() + 1));
+	strncpy(*dest, replaced.c_str(), replaced.length());
+	(*dest)[replaced.length()] = '\0';
+	return count;
 }

@@ -157,11 +157,6 @@ error:
 	return ret;
 }
 
-int git_create_new_repo(const char *path)
-{
-	return git_repository_init(&new_repo, path, 0);
-}
-
 /*!
  * @brief 			Recursively copy a tree
  *
@@ -169,16 +164,22 @@ int git_create_new_repo(const char *path)
  *
  * @return 			oid of the the new tree object; or NULL on failure
  */
-git_oid *copy_tree_r(git_tree *tree)
+git_oid *copy_tree_r(git_tree *tree, int *flag_replaced)
 {
-	const char *name;
+	int toplevel = 0;
+	if (flag_replaced == NULL) {
+		toplevel = 1;
+		flag_replaced = (int *) malloc(sizeof(int));
+		*flag_replaced = 0;
+	}
+	char *name;
 	const git_tree_entry *entry = NULL;
 	static git_oid buf_oid;
 	git_oid *new_oid = NULL;
 	git_otype type;
 	size_t entrycount = git_tree_entrycount(tree);
 	git_treebuilder *builder = NULL;
-	git_treebuilder_new(&builder, new_repo, NULL);
+	git_treebuilder_new(&builder, repo, NULL);
 
 	for (size_t i = 0; i < entrycount; i++) {
 		entry = git_tree_entry_byindex(tree, i);
@@ -187,15 +188,11 @@ git_oid *copy_tree_r(git_tree *tree)
 		if (type == GIT_OBJ_TREE) {
 			git_tree *local_tree = NULL;
 			git_tree_lookup(&local_tree, repo, git_tree_entry_id(entry));
-			new_oid = copy_tree_r(local_tree);
+			new_oid = copy_tree_r(local_tree, flag_replaced);
 			git_tree_free(local_tree);
 			if (new_oid == NULL) goto error;
 		} else if (type == GIT_OBJ_BLOB) {
-			new_oid = &buf_oid;
-			git_blob *local_blob;
-			git_blob_lookup(&local_blob, repo, git_tree_entry_id(entry));
-			git_blob_create_frombuffer(new_oid, new_repo, git_blob_rawcontent(local_blob), git_blob_rawsize(local_blob));
-			git_blob_free(local_blob);
+			new_oid = (git_oid *) git_tree_entry_id(entry);
 			//TODO: implement replacing file contents
 		} else if (type == GIT_OBJ_COMMIT) {
 			new_oid = (git_oid *) git_tree_entry_id(entry);
@@ -204,20 +201,21 @@ git_oid *copy_tree_r(git_tree *tree)
 			new_oid = NULL;
 		}
 
-		if (rename_files)
-			name = replace(git_tree_entry_name(entry));
-		else
-			name = git_tree_entry_name(entry);
 
+		replace(git_tree_entry_name(entry), &name) > 0 && (*flag_replaced = 1);
 		git_treebuilder_insert(NULL, builder, name, new_oid, git_tree_entry_filemode(entry));
-
-		if (rename_files) free((void *)name);
+		free((void *) name);
 	}
 
-	new_oid = &buf_oid;
-	git_treebuilder_write(new_oid, builder);
+	if (*flag_replaced){
+		new_oid = &buf_oid;
+		git_treebuilder_write(new_oid, builder);
+	} else {
+		new_oid = (git_oid *) git_tree_id(tree);
+	}
 
 error:
+	if (toplevel) free(flag_replaced);
 	git_treebuilder_free(builder);
 	return new_oid;
 }
@@ -234,7 +232,7 @@ int copy_commit(git_commit *commit)
 	int ret = 0;
 	git_tree *tree = NULL, *new_tree = NULL;
 	git_oid *new_tree_oid = NULL, new_commit_oid;
-	const char *message_encoding = NULL, *message = NULL;
+	char *message_encoding = NULL, *message = NULL;
 
 	// Get array of new parents
 	git_oid **new_parent_oids = NULL;
@@ -258,15 +256,16 @@ int copy_commit(git_commit *commit)
 	}
 	// Got new parents
 
-	if ((message_encoding = git_commit_message_encoding(commit)) != NULL) // If the message encoding is not UTF-8, let's not touch it
-		message = git_commit_message(commit);
+	if ((message_encoding = (char *) git_commit_message_encoding(commit)) != NULL) // If the message encoding is not UTF-8, let's not touch it
+		message = (char *) git_commit_message(commit);
 	else
-		message = replace(git_commit_message(commit));
+		replace(git_commit_message(commit), &message);
+	//TODO: Handle case when no new commit is necessary
 
 	if ((ret = git_commit_tree(&tree, commit)) != 0) goto error;
-	if ((new_tree_oid = copy_tree_r(tree)) == NULL) {ret = -15; goto error;}
+	if ((new_tree_oid = (rename_files) ? copy_tree_r(tree, NULL) : (git_oid *) git_tree_id(tree)) == NULL) {ret = -15; goto error;}
 
-	if ((ret = git_commit_create_from_ids(&new_commit_oid, new_repo, NULL,
+	if ((ret = git_commit_create_from_ids(&new_commit_oid, repo, NULL,
 					git_commit_author(commit), git_commit_committer(commit),
 					message_encoding, message, new_tree_oid,
 					parentCount,
@@ -339,7 +338,7 @@ git_commit * get_pending(DB *db)
 	return commit;
 }
 
-int git_populate_new_repo()
+int git_perform_replace()
 {
 	int ret = 0;
 	git_commit *commit = NULL, *child = NULL;
@@ -382,7 +381,7 @@ int git_populate_new_repo()
 			fprintf(stderr, "Couldn't get commit of ref %s to copy to new repo\n", refKey.data);
 			goto error;
 		}
-		git_reference_create(&new_ref, new_repo, refKey.data, newRefValue.data, 0, log_message);
+		git_reference_create(&new_ref, repo, refKey.data, newRefValue.data, 1, log_message);
 		git_reference_free(new_ref);
 	}
 
